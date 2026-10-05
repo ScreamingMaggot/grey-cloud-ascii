@@ -1,0 +1,15 @@
+# 音乐不随仓库分发（James Primate《Grey Cloud》是别人的商业曲目）。
+# 本地要听双击打开的完整模式，就自己放一首同名 mp3 在这里。
+# ?demo=1 不依赖音频——频谱曲线已经烘焙进 HTML。
+*.mp3
+
+# 成片超过 GitHub 单文件上限，也不入库
+*.mp4
+*.raw
+
+# 脚本临时产物
+__pycache__/
+measure/_*/
+_probe/
+_chk/
+_test*.mp4
