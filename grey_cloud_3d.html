@@ -154,8 +154,7 @@ addEventListener("pointerleave",()=>{mx=0});
    时间常数按类分开是量出来的差别：kick 稀而重、余响长；hat 密而弱、几乎不余。
    三条包络分别作用于三类团块，所以"音色的脉冲性质"是可分立的，不是整体一闪。 */
 const CLS_N=3, TAU_C=[0.26,0.14,0.065];       // kick / snare / hat 的余响秒数
-const GAIN_C=[1.05,0.85,0.62];                // 每类能撬动多少亮度
-const SWELL_C=[0.13,0.09,0.045];              // 每类的半径外扩
+const SWELL_C=[0.24,0.13,0.065];              // 每类的半径外扩：kick 是推，hat 只是颤
 let PULS=null;
 function buildPulse(){
   const fps=30, n=Math.ceil(CURVES.rms.length*0.5*fps)+8;   // 覆盖整曲 + 余响尾巴
@@ -216,10 +215,16 @@ function buildTile(){
 
 /* ---------- 泼溅缓冲 ---------- */
 let TAU=null,LUM=null,ZS=null,WS=null,phase=0;
+/* 脉冲要有自己的渲染通道。原先 amp*=(1+0.13p) 作用在密度上，而密度还要过
+   饱和式映射 7(1-e^(-1.55v)) 才变字符——密区本来就顶着 █，再乘 1.42 一个字符
+   都不动，脉冲被映射吃掉了。所以逐格记录"主导贡献是哪一类鼓、该类此刻脉冲
+   多大"，高亮层据此单独成串，绕开饱和。 */
+let DOMV=null,DOMC=null,DOMP=null;
 function alloc(){
   const n=COLS*ROWS;
   TAU=new Float32Array(n); LUM=new Float32Array(n);
   ZS=new Float32Array(n);  WS=new Float32Array(n);
+  DOMV=new Float32Array(n); DOMC=new Uint8Array(n); DOMP=new Float32Array(n);
   buildTitle();
 }
 
@@ -228,10 +233,11 @@ function alloc(){
    拿世界 z 排会让遮挡关系跟画面错位（遮挡是这件作品的全部立体的来源，错不得）。
    投影量先算进 scratch 数组再排序，避免每帧新建对象。 */
 let SC=[];
-function buildScratch(){ SC=blobs.map(()=>({ok:0,z:0,x:0,y:0,R:0,amp:0,sw:0,sq:0,c:0})) }
+function buildScratch(){ SC=blobs.map(()=>({ok:0,z:0,x:0,y:0,R:0,amp:0,sw:0,sq:0,c:0,pw:0,pd:0})) }
 const ORD2=[];
 function compose(){
   TAU.fill(0); LUM.fill(0); ZS.fill(0); WS.fill(0);
+  DOMV.fill(0); DOMP.fill(0);
   const W=cv.width, H=cv.height, hx=W*0.5, hy=H*0.5;
   focal = 0.60*W*VOL.zRef/VOL.hx;
   const cy=Math.cos(yaw), sy=Math.sin(yaw);
@@ -247,12 +253,16 @@ function compose(){
     if(Rp<0.6 || sxp+Rp<0 || sxp-Rp>W || syp+Rp<0 || syp-Rp>H) continue;
     const e=bandAt(B.b);
     const near=cl(VOL.zRef*inv,0.30,1.75);
-    const p=pulsAt(B.c,tNow);
+    // 深度延迟：远处的团块晚一点点响应。鼓点因此像一波扫过体积，
+    // 而不是全场同时闪一下——这个"抖"只有真 3D 才给得出来。
+    const p=pulsAt(B.c,tNow-(Z-VOL.zNear)*0.016);
+    // 上升沿：只看冲量到来那几十毫秒。余响期交给形变（半径/轮廓），不再点亮
+    const pd=Math.max(0,(p-pulsAt(B.c,tNow-(Z-VOL.zNear)*0.016-0.05)))*9.0;
     // 呼吸=团块自身缓慢起伏；脉冲=该类鼓点一响就额外鼓胀变亮
     const wob=0.80+0.36*fbm(B.sq,B.sq*0.7-phase*0.35,3.0);
     const amp=B.sig*wob*(0.12+1.05*e)*near*(1+SWELL_C[B.c]*p*3.2);
     if(amp<0.004) continue;
-    s.ok=1; s.z=Z; s.x=sxp; s.y=syp; s.R=Rp*(1+SWELL_C[B.c]*p);
+    s.ok=1; s.z=Z; s.x=sxp; s.y=syp; s.R=Rp*(1+SWELL_C[B.c]*p); s.pw=p; s.pd=pd;
     s.amp=amp; s.sw=B.sw; s.sq=B.sq; s.c=B.c;
     ORD2.push(i);
   }
@@ -275,14 +285,19 @@ function compose(){
         const ci=((ox+dxp*cScale)|0)&(T-1), cj=((oy+dyp*cScale)|0)&(T-1);
         // 揉皱幅度要够大才会"咬出缺口"。0.42 只是让圆周起伏几个百分点，
         // 整体仍是一个解析圆——一眼看出是贴图。0.95 才把轮廓打成不规则团。
-        let pr=1-q2-0.95*(TILE[cj*T+ci]-0.44);       // 半径被噪声咬出缺口
+        let pr=1-q2-(0.95+1.05*s.pw)*(TILE[cj*T+ci]-0.44);   // 揉皱幅度随脉冲加大
         if(pr<=0) continue;
         pr=pr*pr*pr;
         const ti=((ox+dxp*tScale)|0)&(T-1), tj=((oy+dyp*tScale)|0)&(T-1);
         const d=s.amp*pr*(0.30+0.94*TILE[tj*T+ti]);
-        const o=row+c, vis=Math.exp(-TAU[o]);
-        LUM[o]+=d*vis; TAU[o]+=d;
-        ZS[o]+=d*vis*s.z; WS[o]+=d*vis;
+        const o=row+c, vis=Math.exp(-TAU[o]), add=d*vis;
+        LUM[o]+=add; TAU[o]+=d;
+        ZS[o]+=add*s.z; WS[o]+=add;
+        if(add>DOMV[o]){ DOMV[o]=add; DOMC[o]=s.c }
+        // "可见"要按类归一：hat 类按设计就是又小又薄（高频拉丝），实测单个
+        // 起始幅度也最低。用绝对门槛 0.22 会把整类卡死（实测只亮 97 格）。
+        const atk=s.pd*cl(add/(s.amp*0.30),0,1);
+        if(atk>DOMP[o]) DOMP[o]=atk;
       }
     }
   }
@@ -300,10 +315,10 @@ function rasterize(){
     // 越接近画面底部越暗：云底是阴影面
     const shade=base*(0.55+0.45*(1-Math.pow(vert,1.4)*0.7));
     const row=r*COLS;
-    let s0="",s1="",s2="",n0=false,n1=false,n2=false;
+    let s0="",s1="",s2="",sf="",n0=false,n1=false,n2=false,nF=false;
     for(let c=0;c<COLS;c++){
       const v=LUM[row+c];
-      if(v<0.030){s0+=" ";s1+=" ";s2+=" ";continue}
+      if(v<0.030){s0+=" ";s1+=" ";s2+=" ";sf+=" ";continue}
       const zz=WS[row+c]>1e-6?ZS[row+c]/WS[row+c]:VOL.zFar;
       let idx=Math.round(7*(1-Math.exp(-v*1.55)) + bandAt(vert)*1.15 + (zz<7.5?0.7:(zz<11?0.25:-0.25)));
       if(idx>7)idx=7; if(idx<0)idx=0;
@@ -311,10 +326,15 @@ function rasterize(){
       if(zz<7.5){ s2+=ch; n2=true; s0+=" "; s1+=" " }
       else if(zz<11){ s1+=ch; n1=true; s0+=" "; s2+=" " }
       else { s0+=ch; n0=true; s1+=" "; s2+=" " }
+      // 脉冲通道：主导鼓类正在响的格子，字符往上顶两档单独再画一遍
+      const pw=DOMP[row+c];
+      if(pw>0.30){ sf+=THICK.charAt(Math.min(6,idx+1)); nF=true } else sf+=" ";
     }
     if(n0){ cx.fillStyle=`rgba(150,157,170,${cl(shade*0.62,0.06,0.9).toFixed(3)})`; cx.fillText(s0,0,ypx) }
     if(n1){ cx.fillStyle=`rgba(176,182,193,${cl(shade*0.86,0.08,0.92).toFixed(3)})`; cx.fillText(s1,0,ypx) }
     if(n2){ cx.fillStyle=`rgba(214,220,231,${cl(shade*0.98,0.10,0.80).toFixed(3)})`; cx.fillText(s2,0,ypx) }
+    // 字符上限压在 6 不用 7：把 █ 留给密度真正堆满处，高亮层永远带缝
+    if(nF){ cx.fillStyle=`rgba(246,240,226,${cl(shade*1.05,0.14,0.72).toFixed(3)})`; cx.fillText(sf,0,ypx) }
   }
 }
 
@@ -540,7 +560,9 @@ function drawBolts(t){
   if(!BCORE||BW!==COLS+10){ BW=COLS+10; BCORE=new Uint8Array(BW*ROWS); BGLOW=new Uint8Array(BW*ROWS) }
   for(let i=bolts.length-1;i>=0;i--){
     const b=bolts[i], age=t-b.t;
-    if(age>b.life){ bolts.splice(i,1); continue }
+    // age<0 也要丢：驱动把时间拨回去时，先前生成的闪电会变成"未来的"，
+    // 只判 age>life 的话它们永远不过期（实测攒下 354 条，画面糊满金色碎点）
+    if(age>b.life || age<0){ bolts.splice(i,1); continue }
     const k=1-age/b.life, grow=age/b.life;
     const flick=0.5+0.5*Math.abs(Math.sin(age*44+i*2.3));
     const al=Math.pow(k,1.3)*flick;

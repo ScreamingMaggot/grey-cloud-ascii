@@ -25,15 +25,22 @@ INIT = """([t, fps]) => {
   window.requestAnimationFrame = () => 0;              // 关掉自走循环
   // 正向跳时刻：先把鼓点游标推到 t 之后，否则第一帧会一次性放出几十条闪电
   while(oi < STEMS.onT.length && STEMS.onT[oi]*ONSET_GAP < t) oi++;
-  prevT = t;
-  bolts.length = 0;                                    // 清掉预热那 0.8s 里攒下的闪电
-  last = (t - 1/fps)*1000;                             // 让第一帧的 dt 正好是 1/fps
-  return {tNow:+tNow.toFixed(3), oi, ONSET_GAP, bolts:bolts.length};
+  prevT = t; tNow = t; bolts.length = 0;
+  // 驱动必须维护自己的合成页钟。原先写 last=(t-1/fps)*1000，把「歌曲时间」当成
+  // performance.now()（页面运行时间）：那个已经排队的 rAF 回调用真实时间戳进来时
+  // dt 变成 -99.5 秒，tNow 被推到 5 秒，pumpOnsets 判定「时间回跳」而重置游标；
+  // 下一步再拨回目标时刻，它就把该时刻之前所有鼓点一次性放出来（实测 354 条）。
+  window.__now = performance.now();
+  window.__fps = fps;
+  last = window.__now - 1000/fps;
+  audio = {paused:false, currentTime:t};               // 立刻钉住 tNow，让漏进来的回调翻不起浪
+  return {tNow:+tNow.toFixed(3), oi, bolts:bolts.length};
 }"""
 
 STEP = """(t) => {
   audio = {paused:false, currentTime:t};               // frame() 里 tNow 会取这个值
-  frame(t*1000);
+  window.__now += 1000/window.__fps;                   // 页钟按固定步长走 => dt 恒为 1/fps
+  frame(window.__now);
   return 0;
 }"""
 
