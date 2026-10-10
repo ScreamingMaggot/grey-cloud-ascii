@@ -144,7 +144,11 @@ function analyse(t){
 const bandAt=(w)=>bandE[cl(Math.round(w*63),0,63)];
 
 /* ---------- 相机：只绕竖直轴转 ---------- */
-const VOL={hx:3.4, yLo:-1.25, yHi:1.85, zNear:4.2, zFar:16.0, zRef:9.0};
+/* 深度范围收窄到 7~13：透视下 行=0.5+(focal/H)(camY-y)/z，频段项与深度项的
+   权重比是 (yHi-yLo)/z 对 (camY-yLo)(1/zNear-1/zFar)。原先 4.2~16 时两项相当，
+   每类鼓的团块横跨全部深度，于是"低频在下"被深度搅乱（实测重心行不再单调）。
+   1/z 仍有 1.9 倍变化，尺寸透视与转身视差都还在。 */
+const VOL={hx:3.4, yLo:-0.08, yHi:1.90, zNear:7.0, zFar:13.0, zRef:9.5};
 let mx=0, sx=0, yaw=0, focal=1600, camY=0.30;
 addEventListener("pointermove",e=>{mx=(e.clientX/innerWidth-0.5)*2},{passive:true});
 addEventListener("pointerleave",()=>{mx=0});
@@ -271,7 +275,13 @@ function compose(){
     const s=SC[ORD2[li]];
     const RR=s.R, invR2=1/(RR*RR);
     const c0=Math.max(0,Math.floor((s.x-RR)*invPW)), c1=Math.min(COLS-1,Math.ceil((s.x+RR)*invPW));
-    const r0=Math.max(0,Math.floor((s.y-RR)*invCH)), r1=Math.min(ROWS-1,Math.ceil((s.y+RR)*invCH));
+    const r0=Math.max(0,Math.floor((s.y-RR)*invCH));
+    // 云底是**世界里的水平面**，不是屏幕上的横线：同一深度才共用一条底边，
+    // 所以按该团块自己的 Z 求底边行来裁盘。不裁的话圆盘下半截垂到底面以下，
+    // 照样把雨区糊满。
+    const baseYpx=hy+focal*(camY-VOL.yLo)/s.z;
+    const r1=Math.min(ROWS-1,Math.ceil((baseYpx+cellH)*invCH)-1);
+    if(r1<r0) continue;
     const tScale=(T*0.5)/(RR*(0.55+0.9*s.sw));
     // 低频那一路负责"形状"：把截止半径揉皱，边缘才不是圆。
     // 只留高频那一路的话，轮廓是解析圆，一眼就看出是贴图。
@@ -288,6 +298,8 @@ function compose(){
         let pr=1-q2-(0.95+1.05*s.pw)*(TILE[cj*T+ci]-0.44);   // 揉皱幅度随脉冲加大
         if(pr<=0) continue;
         pr=pr*pr;                       // 二次而非三次：三次方把实核缩成一个点，云就没有身体
+        const und=(dyp+RR-(baseYpx-s.y))/cellH;   // 越过底面多少行
+        if(und>0){ pr*=cl(1-und*0.8,0,1); if(pr<=0) continue }   // 越过底面的部分淡出，不留硬线
         const ti=((ox+dxp*tScale)|0)&(T-1), tj=((oy+dyp*tScale)|0)&(T-1);
         const d=s.amp*pr*(0.30+0.94*TILE[tj*T+ti]);
         const o=row+c, vis=Math.exp(-TAU[o]), add=d*vis;
