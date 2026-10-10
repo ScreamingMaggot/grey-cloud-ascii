@@ -199,7 +199,7 @@ function buildBlobs(){
     const c = b>0.66 ? 0 : (b>0.33 ? 1 : 2);        // 频段决定归属哪类鼓
     blobs.push({b,y,z,r,c,
       x:(R()*2-1)*VOL.hx*(0.35+0.65*(1-b*0.3)),
-      sig:(0.30+0.42*R())*(0.40+0.85*b),
+      sig:(0.40+0.52*R())*(0.45+0.85*b),
       sq:R()*400, sw:0.25+0.75*R(), ph:R()*6.283});
   }
 }
@@ -260,7 +260,7 @@ function compose(){
     const pd=Math.max(0,(p-pulsAt(B.c,tNow-(Z-VOL.zNear)*0.016-0.05)))*9.0;
     // 呼吸=团块自身缓慢起伏；脉冲=该类鼓点一响就额外鼓胀变亮
     const wob=0.80+0.36*fbm(B.sq,B.sq*0.7-phase*0.35,3.0);
-    const amp=B.sig*wob*(0.12+1.05*e)*near*(1+SWELL_C[B.c]*p*3.2);
+    const amp=B.sig*wob*(0.26+1.45*e)*near*(1+SWELL_C[B.c]*p*3.2);
     if(amp<0.004) continue;
     s.ok=1; s.z=Z; s.x=sxp; s.y=syp; s.R=Rp*(1+SWELL_C[B.c]*p); s.pw=p; s.pd=pd;
     s.amp=amp; s.sw=B.sw; s.sq=B.sq; s.c=B.c;
@@ -287,7 +287,7 @@ function compose(){
         // 整体仍是一个解析圆——一眼看出是贴图。0.95 才把轮廓打成不规则团。
         let pr=1-q2-(0.95+1.05*s.pw)*(TILE[cj*T+ci]-0.44);   // 揉皱幅度随脉冲加大
         if(pr<=0) continue;
-        pr=pr*pr*pr;
+        pr=pr*pr;                       // 二次而非三次：三次方把实核缩成一个点，云就没有身体
         const ti=((ox+dxp*tScale)|0)&(T-1), tj=((oy+dyp*tScale)|0)&(T-1);
         const d=s.amp*pr*(0.30+0.94*TILE[tj*T+ti]);
         const o=row+c, vis=Math.exp(-TAU[o]), add=d*vis;
@@ -320,7 +320,13 @@ function rasterize(){
       const v=LUM[row+c];
       if(v<0.030){s0+=" ";s1+=" ";s2+=" ";sf+=" ";continue}
       const zz=WS[row+c]>1e-6?ZS[row+c]/WS[row+c]:VOL.zFar;
-      let idx=Math.round(7*(1-Math.exp(-v*1.55)) + bandAt(vert)*1.15 + (zz<7.5?0.7:(zz<11?0.25:-0.25)));
+      /* 阶梯常数是按实测分位反解的，不是试出来的：在 40/110/150/180/205s 五个时刻
+         采了 19692 个亮格的 LUM 分布（p25=0.259 p50=0.517 p80=0.882），解
+         idx=7(v/V)^K 使 p25->2、p50->4、p80->6，得 V=1.081 K=0.760。
+         之前两版都错在这里：指数式把主体压到薄字符端（█ 只有 1 格用，"完全没云"），
+         换幂 0.62 又冲过头（█ 成最大档，厚段 60%，会变回灰板）。
+         现在只有最密的前 5% 顶到 █——云该是中调纹理加一小块实心核。 */
+      let idx=Math.round(7*Math.pow(cl(v/1.081,0,1),0.760) + bandAt(vert)*1.15 + (zz<7.5?0.7:(zz<11?0.25:-0.35)));
       if(idx>7)idx=7; if(idx<0)idx=0;
       const ch=THICK.charAt(idx);
       if(zz<7.5){ s2+=ch; n2=true; s0+=" "; s1+=" " }
